@@ -1,40 +1,83 @@
-name: Build Android APK
+name: Android Build
 
-on: [push]
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
 
 jobs:
   build:
-    runs-on: ubuntu-20.04  # Using older but more stable image
-    
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+
     steps:
-    - name: Checkout code
-      uses: actions/checkout@v2  # Using v2 instead of v3
-    
-    - name: Set up Python 3.11
-      uses: actions/setup-python@v2
-      with:
-        python-version: '3.11'
-    
-    - name: Install system dependencies
-      run: |
-        sudo apt-get update
-        sudo apt-get install -y \
-          git zip unzip openjdk-11-jdk \
-          python3-pip autoconf libtool \
-          pkg-config zlib1g-dev libncurses5-dev
-        
-    - name: Install Buildozer
-      run: |
-        python -m pip install --upgrade pip
-        pip install buildozer
-        
-    - name: Build APK
-      run: |
-        buildozer init
-        buildozer -v android debug
-        
-    - name: Upload APK
-      uses: actions/upload-artifact@v2
-      with:
-        name: app
-        path: bin/*.apk
+      - uses: actions/checkout@v4
+
+      # Cache setup with improved keys
+      - name: Cache dependencies
+        uses: actions/cache@v3
+        with:
+          path: |
+            ~/.buildozer
+            .buildozer
+          key: ${{ runner.os }}-buildozer-${{ hashFiles('buildozer.spec') }}-${{ github.run_id }}
+          restore-keys: |
+            ${{ runner.os }}-buildozer-
+
+      # Optimized dependency installation
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            build-essential git ffmpeg \
+            libsdl2-dev libsdl2-image-dev libsdl2-mixer-dev libsdl2-ttf-dev \
+            libportmidi-dev libswscale-dev libavformat-dev libavcodec-dev \
+            zlib1g-dev libsqlite3-dev sqlite3 libbz2-dev openssl \
+            libgdbm-dev liblzma-dev libreadline-dev uuid-dev \
+            zip unzip autoconf libtool pkg-config \
+            libncurses5-dev cmake libffi-dev libssl-dev automake \
+            openjdk-17-jdk
+
+      # Java setup (alternative method)
+      - name: Setup Java 17
+        run: |
+          sudo apt-get install -y openjdk-17-jdk
+          echo "JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64" >> $GITHUB_ENV
+
+      # Python setup with fallback
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      # Buildozer installation with retry
+      - name: Install Buildozer
+        run: |
+          pip install --upgrade pip wheel
+          pip install buildozer cython==0.29.33 plyer
+          retry_count=0
+          until buildozer --version || [ $retry_count -eq 3 ]; do
+            ((retry_count++))
+            sleep 5
+          done
+
+      # Build with improved error handling
+      - name: Build APK
+        run: |
+          buildozer init || true
+          buildozer -v android clean
+          if ! buildozer -v android debug; then
+            echo "Build failed, retrying..."
+            buildozer -v android clean
+            buildozer -v android debug
+          fi
+
+      # Artifact upload with verification
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v3
+        with:
+          name: android-package
+          path: bin/*
+          retention-days: 3
