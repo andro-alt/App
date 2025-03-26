@@ -2,82 +2,138 @@ name: Android Build
 
 on:
   push:
-    branches: [main]
+    branches:
+      - main
   pull_request:
-    branches: [main]
+    branches:
+      - main
 
 jobs:
   build:
     runs-on: ubuntu-22.04
-    timeout-minutes: 30
 
     steps:
       - uses: actions/checkout@v4
 
-      # Cache setup with improved keys
-      - name: Cache dependencies
-        uses: actions/cache@v3
+      # Used to cache dependencies with a timeout
+      - name: Get Date
+        id: get-date
+        run: |
+          echo "date=$(date -u '+%Y%m%d')" >> $GITHUB_ENV
+        shell: bash
+
+      - name: Cache Buildozer global directory
+        uses: actions/cache@v4
         with:
-          path: |
-            ~/.buildozer
-            .buildozer
-          key: ${{ runner.os }}-buildozer-${{ hashFiles('buildozer.spec') }}-${{ github.run_id }}
+          path: ~/.buildozer
+          key: buildozer-global-${{ runner.os }}-${{ steps.get-date.outputs.date }}-${{ hashFiles('buildozer.spec') }}
+          restore-keys: |
+            buildozer-global-${{ runner.os }}-
+
+      - name: Cache Buildozer directory in app
+        uses: actions/cache@v4
+        with:
+          path: .buildozer
+          key: ${{ runner.os }}-buildozer-${{ github.run_id }}-${{ hashFiles('buildozer.spec') }}
           restore-keys: |
             ${{ runner.os }}-buildozer-
 
-      # Optimized dependency installation
-      - name: Install system dependencies
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends \
-            build-essential git ffmpeg \
-            libsdl2-dev libsdl2-image-dev libsdl2-mixer-dev libsdl2-ttf-dev \
-            libportmidi-dev libswscale-dev libavformat-dev libavcodec-dev \
-            zlib1g-dev libsqlite3-dev sqlite3 libbz2-dev openssl \
-            libgdbm-dev liblzma-dev libreadline-dev uuid-dev \
-            zip unzip autoconf libtool pkg-config \
-            libncurses5-dev cmake libffi-dev libssl-dev automake \
-            openjdk-17-jdk
-
-      # Java setup (alternative method)
-      - name: Setup Java 17
-        run: |
-          sudo apt-get install -y openjdk-17-jdk
-          echo "JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64" >> $GITHUB_ENV
-
-      # Python setup with fallback
-      - name: Set up Python 3.11
-        uses: actions/setup-python@v4
+      - name: Cache Android SDK
+        uses: actions/cache@v4
         with:
-          python-version: '3.11'
-          cache: 'pip'
+          path: ~/.buildozer/android/platform/android-sdk
+          key: ${{ runner.os }}-android-sdk-${{ steps.get-date.outputs.date }}
+          restore-keys: |
+            ${{ runner.os }}-android-sdk-
 
-      # Buildozer installation with retry
-      - name: Install Buildozer
-        run: |
-          pip install --upgrade pip wheel
-          pip install buildozer cython==0.29.33 plyer
-          retry_count=0
-          until buildozer --version || [ $retry_count -eq 3 ]; do
-            ((retry_count++))
-            sleep 5
-          done
-
-      # Build with improved error handling
-      - name: Build APK
-        run: |
-          buildozer init || true
-          buildozer -v android clean
-          if ! buildozer -v android debug; then
-            echo "Build failed, retrying..."
-            buildozer -v android clean
-            buildozer -v android debug
-          fi
-
-      # Artifact upload with verification
-      - name: Upload artifacts
-        uses: actions/upload-artifact@v3
+      - name: Cache Android NDK
+        uses: actions/cache@v4
         with:
-          name: android-package
-          path: bin/*
+          path: ~/.buildozer/android/platform/android-ndk-r25b
+          key: ${{ runner.os }}-android-ndk-${{ steps.get-date.outputs.date }}
+          restore-keys: |
+            ${{ runner.os }}-android-ndk-
+
+      # Install dependencies
+      - name: Install dependencies
+        run: |
+          sudo apt update
+          sudo apt-get install -y \
+            build-essential \
+            git \
+            ffmpeg \
+            libsdl2-dev \
+            libsdl2-image-dev \
+            libsdl2-mixer-dev \
+            libsdl2-ttf-dev \
+            libportmidi-dev \
+            libswscale-dev \
+            libavformat-dev \
+            libavcodec-dev \
+            libunwind-dev \
+            zlib1g-dev
+          sudo apt-get install -y \
+            libsqlite3-dev \
+            sqlite3 \
+            bzip2 \
+            libbz2-dev \
+            zlib1g-dev \
+            openssl \
+            libgdbm-dev \
+            libgdbm-compat-dev \
+            liblzma-dev \
+            libreadline-dev \
+            uuid-dev \
+            libgstreamer1.0 \
+            gstreamer1.0-plugins-base \
+            gstreamer1.0-plugins-good
+          sudo apt-get install -y \
+            zip \
+            unzip \
+            autoconf \
+            libtool \
+            pkg-config \
+            libncurses5-dev \
+            libncursesw5-dev \
+            libtinfo5 \
+            cmake \
+            libffi-dev \
+            libssl-dev \
+            automake
+
+      # Set up Java 17 required by Gradle
+      - name: Setup Java 17 required by Gradle
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'  # or 'zulu', 'liberica', etc.
+          java-version: '17'
+
+      # Set up Python
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11' #set your python version
+
+      # Install pip dependencies
+      - name: Install pip dependencies
+        run: |
+          pip install --upgrade pip
+          pip install buildozer cython==0.29.33 git+https://github.com/kivy/plyer.git
+
+      # Build with Buildozer
+      - name: Build with Buildozer
+        id: buildozer
+        run: |
+          yes | buildozer -v android debug
+        # yes | buildozer -v android release
+        # run this for generating aab (Android App Bundle) [Required by google play]
+
+      # Upload artifacts
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: package
+          path: |
+            bin/*.apk
+            bin/*.aab
           retention-days: 3
